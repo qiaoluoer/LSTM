@@ -1,6 +1,7 @@
 # coding=utf-8
 
 import pandas as pd
+from pandas import DataFrame
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow.compat.v1 as tf
@@ -8,27 +9,39 @@ import tf_slim as slim
 tf.disable_v2_behavior()
 from pdb import set_trace
 
-rnn_unit = 10  # 隐层神经元的个数
+rnn_unit = 50  # 隐层神经元的个数
 lstm_layers = 2  # 隐层层数
 #input_size = 7  参数个数？
-input_size = 7
+input_size = 1  #因变量个数
 output_size = 1
-lr = 0.0006  # 学习率
+lr = 0.001  # 学习率
+epoch = 500
 # ——————————————————导入数据——————————————————————
 
 #f = open('dataset_2.csv')
 #data = df.iloc[:, 2:10].values  # 取第3-10列
-f = open('人民币汇率中间价2015.9-2022.8.csv')
+filename = '汇率-单变量.csv'
+f = open(filename)
 df = pd.read_csv(f)         #读入汇率数据
-data = np.array(df['美元'])  #获取美元序列
+data = df.iloc[:, 1:input_size+2].values
+data = pd.DataFrame(data).dropna().values    #丢弃含nan值的行
+
 train_size = int(len(data) * 0.85)  #定义训练集比例
 test_size = len(data) - train_size  #定义测试集比例
+
+#set_trace()
+def datanormalization(data, normal_method):
+    if normal_method == 'z-score':
+        normalized_train_data = (data - np.mean(data, axis=0)) / np.std(data, axis=0)  # z-score标准化
+    return data
+
 
 # 获取训练集
 def get_train_data(batch_size=60, time_step=20, train_begin=0, train_end=train_size):
     batch_index = []
     data_train = data[train_begin:train_end]
-    normalized_train_data = (data_train - np.mean(data_train, axis=0)) / np.std(data_train, axis=0)  # 标准化
+    normalized_train_data = (data_train - np.mean(data_train, axis=0)) / np.std(data_train, axis=0)  # z-score标准化
+    #normalized_train_data = (data_train - np.min(data_train))/(np.max(data_train) - np.min(data_train))  #最大最小值归一化
     train_x, train_y = [], []  # 训练集x和y初定义
     #set_trace()
     for i in range(len(normalized_train_data) - time_step):
@@ -115,7 +128,7 @@ def train_lstm(batch_size=60, time_step=20, train_begin=0, train_end=train_size)
 
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
-        for i in range(100):  # 这个迭代次数，可以更改，越大预测效果会更好，但需要更长时间
+        for i in range(epoch):  # 这个迭代次数，可以更改，越大预测效果会更好，但需要更长时间
             for step in range(len(batch_index) - 1):
                 _, loss_ = sess.run([train_op, loss], feed_dict={X: train_x[batch_index[step]:batch_index[step + 1]],
                                                                  Y: train_y[batch_index[step]:batch_index[step + 1]],
@@ -126,7 +139,6 @@ def train_lstm(batch_size=60, time_step=20, train_begin=0, train_end=train_size)
         # if you run it on Linux,please use  'model_save2/modle.ckpt'
         print("The train has finished")
 
-
 train_lstm()
 
 
@@ -134,6 +146,7 @@ train_lstm()
 def prediction(time_step=20):
     X = tf.placeholder(tf.float32, shape=[None, time_step, input_size])
     mean, std, test_x, test_y = get_test_data(time_step)
+    #set_trace()
     with tf.variable_scope("sec_lstm", reuse=tf.AUTO_REUSE):
         pred, _ = lstm(X)
     saver = tf.train.Saver(tf.global_variables())
@@ -146,15 +159,28 @@ def prediction(time_step=20):
             prob = sess.run(pred, feed_dict={X: [test_x[step]], keep_prob: 1})
             predict = prob.reshape((-1))
             test_predict.extend(predict)
-        test_y = np.array(test_y) * std[input_size] + mean[input_size]
-        test_predict = np.array(test_predict) * std[input_size] + mean[input_size]
-        acc = np.average(np.abs(test_predict - test_y[:len(test_predict)]) / test_y[:len(test_predict)])  # 偏差程度
-        print("The accuracy of this predict:", acc)
-        # 以折线图表示结果
-        plt.figure()
-        plt.plot(list(range(len(test_predict))), test_predict, color='b', )
-        plt.plot(list(range(len(test_y))), test_y, color='r')
-        plt.show()
+        test_y = np.array(test_y) * std[input_size] + mean[input_size]  #z-score归一化还原值
+        test_predict = np.array(test_predict) * std[input_size] + mean[input_size]  #z-score归一化还原值
 
+        #test_y = np.array(test_y) * (max[input_size]-min[input_size]) + min[input_size]  # z-score归一化还原值
+        #test_predict = np.array(test_predict) * (max[input_size]-min[input_size]) + min[input_size]  # z-score归一化还原值
+
+        mape = np.average(np.abs(test_predict - test_y[:len(test_predict)]) / test_y[:len(test_predict)])  # 平均绝对百分比误差
+        mae = np.average(np.abs(test_predict - test_y[:len(test_predict)]))  #平均绝对误差
+        rmse = (1/len(test_predict)*np.sum(np.square(test_predict-test_y[:len(test_predict)])))**0.5
+
+        print("The mape of this predict:", mape)
+        print("The mae of this predict:", mae)
+        print("The rmse of this predict:", rmse)
+        wrexcel(test_predict, test_y)
+
+
+def wrexcel(test_predict, test_y):
+    data = {'pre': test_predict, 'true': test_y[0:560]}
+    df = DataFrame(data)
+    #set_trace()
+    newname = filename.replace('.csv', '.xlsx')
+    df.to_excel(newname)
+    return
 
 prediction()
